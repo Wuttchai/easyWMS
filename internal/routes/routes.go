@@ -24,6 +24,7 @@ func Register(r *gin.Engine, h handlers.Handler) {
 		api.POST("/zones", handlers.RequireRoles("ADMIN"), h.CreateZone)
 		api.GET("/locations", h.ListLocations)
 		api.POST("/locations", handlers.RequireRoles("ADMIN"), h.CreateLocation)
+		api.DELETE("/:resource/:id", handlers.RequireRoles("ADMIN"), h.DeleteMaster)
 		api.GET("/units", h.ListUnits)
 		api.POST("/units", handlers.RequireRoles("ADMIN"), h.CreateUnit)
 		api.GET("/suppliers", h.ListSuppliers)

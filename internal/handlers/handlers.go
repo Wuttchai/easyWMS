@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
 
@@ -153,8 +154,224 @@ func (h Handler) ListLocations(c *gin.Context) {
 func (h Handler) CreateLocation(c *gin.Context) {
 	var r models.Location
 	if h.bindCreate(c, &r) {
+		r.WarehouseCode = strings.TrimSpace(r.WarehouseCode)
+		r.ZoneCode = strings.TrimSpace(r.ZoneCode)
+		r.Code = strings.TrimSpace(r.Code)
+		r.Name = strings.TrimSpace(r.Name)
+		if r.WarehouseCode == "" || r.ZoneCode == "" || r.Code == "" || r.Name == "" {
+			c.JSON(400, gin.H{"error": "warehouse, zone, code and name are required"})
+			return
+		}
+		var warehouse models.Warehouse
+		if err := h.DB.Where("code = ?", r.WarehouseCode).First(&warehouse).Error; err != nil {
+			c.JSON(400, gin.H{"error": "warehouse not found"})
+			return
+		}
+		var zone models.Zone
+		if err := h.DB.Where("code = ? AND warehouse_code = ?", r.ZoneCode, r.WarehouseCode).First(&zone).Error; err != nil {
+			c.JSON(400, gin.H{"error": "zone does not belong to the selected warehouse"})
+			return
+		}
 		h.create(c, &r)
 	}
+}
+func (h Handler) DeleteLocation(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid location id"})
+		return
+	}
+	var location models.Location
+	if err := h.DB.First(&location, "id = ?", id).Error; err != nil {
+		c.JSON(404, gin.H{"error": "location not found"})
+		return
+	}
+	var qty float64
+	h.DB.Model(&models.Inventory{}).Where("location_id = ?", id).Select("COALESCE(SUM(qty), 0)").Scan(&qty)
+	if qty > 0 {
+		c.JSON(400, gin.H{"error": "cannot delete a location with stock"})
+		return
+	}
+	if err := h.DB.Delete(&location).Error; err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"message": "location deleted"})
+}
+func (h Handler) DeleteMaster(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid master id"})
+		return
+	}
+	resource := c.Param("resource")
+	var code string
+	var record any
+	switch resource {
+	case "products":
+		var row models.Product
+		record, code = &row, "product"
+		if err = h.DB.First(&row, "id = ?", id).Error; err == nil {
+			var count int64
+			h.DB.Model(&models.Inventory{}).Where("product_id = ?", id).Count(&count)
+			if count == 0 {
+				h.DB.Model(&models.InventoryLot{}).Where("product_id = ?", id).Count(&count)
+			}
+			if count == 0 {
+				h.DB.Model(&models.StockMovement{}).Where("product_id = ?", id).Count(&count)
+			}
+			if count == 0 {
+				h.DB.Model(&models.StockCount{}).Where("product_id = ?", id).Count(&count)
+			}
+			if count == 0 {
+				h.DB.Model(&models.Adjustment{}).Where("product_id = ?", id).Count(&count)
+			}
+			if count > 0 {
+				c.JSON(400, gin.H{"error": "cannot delete product because it is already used"})
+				return
+			}
+		}
+	case "warehouses":
+		var row models.Warehouse
+		record, code = &row, "warehouse"
+		if err = h.DB.First(&row, "id = ?", id).Error; err == nil {
+			var count int64
+			h.DB.Model(&models.Zone{}).Where("warehouse_code = ?", row.Code).Count(&count)
+			if count == 0 {
+				h.DB.Model(&models.Location{}).Where("warehouse_code = ?", row.Code).Count(&count)
+			}
+			if count > 0 {
+				c.JSON(400, gin.H{"error": "cannot delete warehouse because it has zones or locations"})
+				return
+			}
+		}
+	case "zones":
+		var row models.Zone
+		record, code = &row, "zone"
+		if err = h.DB.First(&row, "id = ?", id).Error; err == nil {
+			var count int64
+			h.DB.Model(&models.Location{}).Where("zone_code = ? AND warehouse_code = ?", row.Code, row.WarehouseCode).Count(&count)
+			if count > 0 {
+				c.JSON(400, gin.H{"error": "cannot delete zone because it has locations"})
+				return
+			}
+		}
+	case "locations":
+		var row models.Location
+		record, code = &row, "location"
+		if err = h.DB.First(&row, "id = ?", id).Error; err == nil {
+			var count int64
+			h.DB.Model(&models.Inventory{}).Where("location_id = ?", id).Count(&count)
+			if count == 0 {
+				h.DB.Model(&models.InventoryLot{}).Where("location_id = ?", id).Count(&count)
+			}
+			if count == 0 {
+				h.DB.Model(&models.StockMovement{}).Where("location_id = ?", id).Count(&count)
+			}
+			if count == 0 {
+				h.DB.Model(&models.StockCount{}).Where("location_id = ?", id).Count(&count)
+			}
+			if count == 0 {
+				h.DB.Model(&models.Adjustment{}).Where("location_id = ?", id).Count(&count)
+			}
+			if count > 0 {
+				c.JSON(400, gin.H{"error": "cannot delete location because it is already used"})
+				return
+			}
+		}
+	case "units":
+		var row models.Unit
+		record, code = &row, "unit"
+		if err = h.DB.First(&row, "id = ?", id).Error; err == nil {
+			var count int64
+			h.DB.Model(&models.Product{}).Where("unit = ?", row.Code).Count(&count)
+			if count > 0 {
+				c.JSON(400, gin.H{"error": "cannot delete unit because it is used by products"})
+				return
+			}
+		}
+	case "categories":
+		var row models.ProductCategory
+		record, code = &row, "category"
+		if err = h.DB.First(&row, "id = ?", id).Error; err == nil {
+			var count int64
+			h.DB.Model(&models.Product{}).Where("category_code = ?", row.Code).Count(&count)
+			if count > 0 {
+				c.JSON(400, gin.H{"error": "cannot delete category because it is used by products"})
+				return
+			}
+		}
+	case "storage-types":
+		var row models.StorageType
+		record, code = &row, "storage type"
+		if err = h.DB.First(&row, "id = ?", id).Error; err == nil {
+			var count int64
+			h.DB.Model(&models.Product{}).Where("storage_type = ?", row.Code).Count(&count)
+			if count > 0 {
+				c.JSON(400, gin.H{"error": "cannot delete storage type because it is used by products"})
+				return
+			}
+		}
+	case "reason-codes":
+		var row models.ReasonCode
+		record, code = &row, "reason code"
+		if err = h.DB.First(&row, "id = ?", id).Error; err == nil {
+			var count int64
+			h.DB.Model(&models.StockMovement{}).Where("reason_code = ?", row.Code).Count(&count)
+			if count == 0 {
+				h.DB.Model(&models.Adjustment{}).Where("reason_code = ?", row.Code).Count(&count)
+			}
+			if count > 0 {
+				c.JSON(400, gin.H{"error": "cannot delete reason code because it is already used"})
+				return
+			}
+		}
+	case "employees":
+		var row models.Employee
+		record, code = &row, "employee"
+		if err = h.DB.First(&row, "id = ?", id).Error; err == nil {
+			if row.Username == "admin" {
+				c.JSON(400, gin.H{"error": "cannot delete the demo admin account"})
+				return
+			}
+			var count int64
+			h.DB.Model(&models.StockMovement{}).Where("created_by = ?", row.Username).Count(&count)
+			if count == 0 {
+				h.DB.Model(&models.StockCount{}).Where("created_by = ?", row.Username).Count(&count)
+			}
+			if count == 0 {
+				h.DB.Model(&models.Adjustment{}).Where("requested_by = ? OR approved_by = ?", row.Username, row.Username).Count(&count)
+			}
+			if count > 0 {
+				c.JSON(400, gin.H{"error": "cannot delete employee because the account is used in audit history"})
+				return
+			}
+		}
+	case "suppliers":
+		var row models.Supplier
+		record, code = &row, "supplier"
+		err = h.DB.First(&row, "id = ?", id).Error
+	case "customers":
+		var row models.Customer
+		record, code = &row, "customer"
+		err = h.DB.First(&row, "id = ?", id).Error
+	default:
+		c.JSON(404, gin.H{"error": "master delete is not supported"})
+		return
+	}
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(404, gin.H{"error": code + " not found"})
+			return
+		}
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.DB.Delete(record).Error; err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"message": code + " deleted"})
 }
 func (h Handler) ListUnits(c *gin.Context) {
 	var r []models.Unit
