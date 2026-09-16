@@ -3,11 +3,19 @@ package routes
 import (
 	"easywms-demo-v3/internal/handlers"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
 
 func Register(r *gin.Engine, h handlers.Handler) {
+	// Revalidate UI assets so HTML and JavaScript stay in sync after updates.
+	r.Use(func(c *gin.Context) {
+		if c.Request.Method == http.MethodGet && !strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			c.Header("Cache-Control", "no-cache")
+		}
+		c.Next()
+	})
 	r.POST("/api/login", h.Login)
 
 	api := r.Group("/api", h.Auth())

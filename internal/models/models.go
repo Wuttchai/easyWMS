@@ -121,19 +121,24 @@ type InventoryLot struct {
 	UpdatedAt  time.Time  `json:"updated_at"`
 }
 type StockMovement struct {
-	ID         uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`
-	ProductID  uuid.UUID `gorm:"type:uuid;index" json:"product_id"`
-	LocationID uuid.UUID `gorm:"type:uuid;index" json:"location_id"`
-	Type       string    `gorm:"not null" json:"type"`
-	Qty        float64   `gorm:"not null" json:"qty"`
-	LotNo      string    `json:"lot_no"`
-	Reference  string    `json:"reference"`
-	ReasonCode string    `json:"reason_code"`
-	Note       string    `json:"note"`
-	CreatedBy  string    `json:"created_by"`
-	CreatedAt  time.Time `json:"created_at"`
-	Product    Product   `json:"product"`
-	Location   Location  `json:"location"`
+	SupplierCode string    `json:"supplier_code"`
+	SupplierName string    `json:"supplier_name"`
+	IssuePurpose string    `json:"issue_purpose"`
+	CustomerCode string    `json:"customer_code"`
+	CustomerName string    `json:"customer_name"`
+	ID           uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`
+	ProductID    uuid.UUID `gorm:"type:uuid;index" json:"product_id"`
+	LocationID   uuid.UUID `gorm:"type:uuid;index" json:"location_id"`
+	Type         string    `gorm:"not null" json:"type"`
+	Qty          float64   `gorm:"not null" json:"qty"`
+	LotNo        string    `json:"lot_no"`
+	Reference    string    `json:"reference"`
+	ReasonCode   string    `json:"reason_code"`
+	Note         string    `json:"note"`
+	CreatedBy    string    `json:"created_by"`
+	CreatedAt    time.Time `json:"created_at"`
+	Product      Product   `json:"product"`
+	Location     Location  `json:"location"`
 }
 type StockCount struct {
 	ID           uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`

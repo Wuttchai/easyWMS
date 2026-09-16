@@ -9,6 +9,38 @@ import (
 
 func ApplyMovement(db *gorm.DB, typ string, req MovementRequest) error {
 	return db.Transaction(func(tx *gorm.DB) error {
+		var customer models.Customer
+		var supplier models.Supplier
+		if req.SupplierCode != "" {
+			if typ != "IN" {
+				return errors.New("supplier is only allowed for receiving goods")
+			}
+			if err := tx.Where("code = ?", req.SupplierCode).First(&supplier).Error; err != nil {
+				return errors.New("supplier not found")
+			}
+		}
+		if typ == "OUT" {
+			if req.IssuePurpose == "" {
+				req.IssuePurpose = "INTERNAL"
+			}
+			switch req.IssuePurpose {
+			case "CUSTOMER":
+				if req.CustomerCode == "" {
+					return errors.New("customer is required for customer delivery")
+				}
+				if err := tx.Where("code = ?", req.CustomerCode).First(&customer).Error; err != nil {
+					return errors.New("customer not found")
+				}
+			case "INTERNAL":
+				if req.CustomerCode != "" {
+					return errors.New("customer is only allowed for customer delivery")
+				}
+			default:
+				return errors.New("invalid issue purpose")
+			}
+		} else {
+			req.IssuePurpose = ""
+		}
 		p, l, err := findProductLocation(tx, req.SKU, req.LocationCode)
 		if err != nil {
 			return err
@@ -47,6 +79,6 @@ func ApplyMovement(db *gorm.DB, typ string, req MovementRequest) error {
 				return err
 			}
 		}
-		return tx.Create(&models.StockMovement{ID: uuid.New(), ProductID: p.ID, LocationID: l.ID, Type: typ, Qty: req.Qty, LotNo: req.LotNo, Reference: req.Reference, ReasonCode: req.ReasonCode, Note: req.Note, CreatedBy: req.CreatedBy}).Error
+		return tx.Create(&models.StockMovement{ID: uuid.New(), ProductID: p.ID, LocationID: l.ID, Type: typ, Qty: req.Qty, LotNo: req.LotNo, Reference: req.Reference, ReasonCode: req.ReasonCode, Note: req.Note, CreatedBy: req.CreatedBy, IssuePurpose: req.IssuePurpose, CustomerCode: customer.Code, CustomerName: customer.Name, SupplierCode: supplier.Code, SupplierName: supplier.Name}).Error
 	})
 }

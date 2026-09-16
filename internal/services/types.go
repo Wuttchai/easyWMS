@@ -3,6 +3,9 @@ package services
 import "time"
 
 type MovementRequest struct {
+	SupplierCode string     `json:"supplier_code"`
+	IssuePurpose string     `json:"issue_purpose"`
+	CustomerCode string     `json:"customer_code"`
 	SKU          string     `json:"sku" binding:"required"`
 	LocationCode string     `json:"location_code" binding:"required"`
 	Qty          float64    `json:"qty" binding:"required,gt=0"`

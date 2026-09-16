@@ -469,7 +469,14 @@ func (h Handler) ListLotInventory(c *gin.Context) {
 }
 func (h Handler) ListMovements(c *gin.Context) {
 	var r []models.StockMovement
-	h.DB.Preload("Product").Preload("Location").Order("created_at desc").Limit(300).Find(&r)
+	query := h.DB.Preload("Product").Preload("Location")
+	if typ := c.Query("type"); typ != "" {
+		query = query.Where("type = ?", typ)
+	}
+	if err := query.Order("created_at desc").Limit(300).Find(&r).Error; err != nil {
+		c.JSON(500, gin.H{"error": "unable to load movement history"})
+		return
+	}
 	c.JSON(200, r)
 }
 func (h Handler) ListStockCounts(c *gin.Context) {
