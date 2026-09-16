@@ -18,6 +18,7 @@ func MigrateAndSeed(db *gorm.DB) error {
 	if err := db.AutoMigrate(&models.Product{}, &models.Warehouse{}, &models.Zone{}, &models.Location{}, &models.Unit{}, &models.Supplier{}, &models.Customer{}, &models.Employee{}, &models.ProductCategory{}, &models.StorageType{}, &models.ReasonCode{}, &models.Inventory{}, &models.InventoryLot{}, &models.StockMovement{}, &models.StockCount{}, &models.Adjustment{}); err != nil {
 		return err
 	}
+	if err := SyncStockCountStatuses(db); err != nil { return err }
 	seed := func(model any, rows any) error {
 		var n int64
 		db.Model(model).Count(&n)

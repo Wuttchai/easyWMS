@@ -60,6 +60,9 @@ func ApproveAdjustment(db *gorm.DB, id uuid.UUID, user string) (*models.Adjustme
 		if err := tx.Save(&out).Error; err != nil {
 			return err
 		}
+		if err := tx.Model(&models.StockCount{}).Where("adjustment_id = ? AND status = ?", out.ID, "PENDING_APPROVAL").Update("status", "COMPLETED").Error; err != nil {
+			return err
+		}
 		return tx.Create(&models.StockMovement{ID: uuid.New(), ProductID: out.ProductID, LocationID: out.LocationID, Type: typ, Qty: out.Qty, Reference: out.DocumentNo, ReasonCode: out.ReasonCode, Note: out.Note, CreatedBy: user}).Error
 	})
 	return &out, err
@@ -67,15 +70,17 @@ func ApproveAdjustment(db *gorm.DB, id uuid.UUID, user string) (*models.Adjustme
 
 func RejectAdjustment(db *gorm.DB, id uuid.UUID, user string) (*models.Adjustment, error) {
 	var row models.Adjustment
-	if err := db.First(&row, "id=?", id).Error; err != nil {
-		return nil, err
-	}
-	if row.Status != "PENDING" {
-		return nil, errors.New("adjustment is not pending")
-	}
-	now := time.Now()
-	row.Status = "REJECTED"
-	row.ApprovedBy = user
-	row.ApprovedAt = &now
-	return &row, db.Save(&row).Error
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&row, "id=?", id).Error; err != nil {
+			return err
+		}
+		if row.Status != "PENDING" { return errors.New("adjustment is not pending") }
+		now := time.Now()
+		row.Status = "REJECTED"
+		row.ApprovedBy = user
+		row.ApprovedAt = &now
+		if err := tx.Save(&row).Error; err != nil { return err }
+		return tx.Model(&models.StockCount{}).Where("adjustment_id = ? AND status = ?", row.ID, "PENDING_APPROVAL").Update("status", "REJECTED").Error
+	})
+	return &row, err
 }

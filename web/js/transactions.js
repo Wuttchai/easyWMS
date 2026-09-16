@@ -66,8 +66,74 @@ function changeTransferPage(direction) {
   transferPage += direction;
   renderTransferPage();
 }
-async function submitStockCount(){try{await postAction('/api/stock-count',{sku:$('cSku').value,location_code:$('cLoc').value,counted_qty:Number($('cQty').value),reference:$('cRef').value,reason_code:$('cReason').value},'stockCountMsg');loadStockCounts()}catch{}}
-async function submitAdjustment(){try{await postAction('/api/adjustments',{sku:$('aSku').value,location_code:$('aLoc').value,direction:$('aDirection').value,qty:Number($('aQty').value),reference:$('aRef').value,reason_code:$('aReason').value,note:$('aNote').value},'adjustmentMsg');loadAdjustments()}catch{}}
+async function submitAdjustment() {
+  if ($('adjustmentSubmit').disabled) return;
+  $('adjustmentSubmit').disabled = true;
+  try {
+    await postAction('/api/adjustments',{sku:$('aSku').value,location_code:$('aLoc').value,direction:$('aDirection').value,qty:Number($('aQty').value),reference:$('aRef').value,reason_code:$('aReason').value,note:$('aNote').value},'adjustmentMsg');
+    await showAdjustmentHistory('ส่งคำขอปรับสต็อกแล้ว รออนุมัติ');
+  } catch {} finally { $('adjustmentSubmit').disabled = false; }
+}
+
+async function openAdjustmentForm() {
+  if ($('adjustmentSubmit').disabled) return;
+  ['aSku','aLoc','aQty','aRef','aNote','aReason'].forEach(id => $(id).value = '');
+  $('aDirection').value = 'IN';
+  $('adjustmentMsg').textContent = '';
+  $('adjustmentMsg').className = 'msg';
+  $('adjustmentHistory').classList.add('hidden');
+  $('adjustmentForm').classList.remove('hidden');
+  $('pageSub').textContent = 'สร้างคำขอปรับสต็อก';
+  await loadLocations();
+  $('aSku').focus();
+}
+
+function showAdjustmentHistory(message = '') {
+  $('adjustmentForm').classList.add('hidden');
+  $('adjustmentHistory').classList.remove('hidden');
+  $('pageSub').textContent = 'อนุมัติ/ปฏิเสธการปรับ Stock';
+  $('adjustmentHistoryMsg').className = 'msg success';
+  $('adjustmentHistoryMsg').textContent = message;
+  return loadAdjustments();
+}
+
+const adjustmentPageSize = 5;
+let adjustmentRows = [], adjustmentPage = 1, adjustmentLoadId = 0;
+
+async function loadAdjustments(page = 1) {
+  const loadId = ++adjustmentLoadId;
+  adjustmentRows = [];
+  adjustmentPage = page;
+  $('adjustmentTable').textContent = 'กำลังโหลดคำขอปรับสต็อก...';
+  try {
+    const rows = await api('/api/adjustments');
+    if (loadId !== adjustmentLoadId) return;
+    adjustmentRows = rows || [];
+    renderAdjustmentPage();
+  } catch (e) {
+    if (loadId !== adjustmentLoadId) return;
+    $('adjustmentTable').textContent = 'โหลดคำขอไม่สำเร็จ: ' + e.message;
+  }
+}
+
+function renderAdjustmentPage() {
+  const total = adjustmentRows.length, pages = Math.max(1, Math.ceil(total / adjustmentPageSize));
+  adjustmentPage = Math.max(1, Math.min(adjustmentPage, pages));
+  const start = (adjustmentPage - 1) * adjustmentPageSize;
+  const rows = adjustmentRows.slice(start, start + adjustmentPageSize).map(x => {
+    const can = me && ['ADMIN','SUPERVISOR'].includes(me.role) && x.status === 'PENDING';
+    return `<tr><td>${dateFmt(x.created_at)}</td><td>${esc(x.document_no)}</td><td>${esc(x.product?.sku)}</td><td>${esc(x.location?.code)}</td><td>${badge(x.direction)}</td><td>${fmt(x.qty)}</td><td>${esc(x.reason_code || '-')}</td><td>${badge(x.status)}</td><td>${esc(x.requested_by || '-')}</td><td>${can ? `<button class="mini" onclick="adjAction('${esc(x.id)}','approve')">Approve</button> <button class="mini danger" onclick="adjAction('${esc(x.id)}','reject')">Reject</button>` : '-'}</td></tr>`;
+  });
+  const target = $('adjustmentTable');
+  target.innerHTML = table(['วันที่','เอกสาร','SKU','Location','ประเภท','จำนวน','เหตุผล','สถานะ','ผู้ขอ','ดำเนินการ'], rows);
+  if (!total) target.querySelector('.empty').textContent = 'ยังไม่มีคำขอปรับสต็อก';
+  target.insertAdjacentHTML('beforeend', `<nav class="master-pagination" aria-label="หน้ารายการคำขอปรับสต็อก"><span role="status">แสดง ${total ? start + 1 : 0}–${Math.min(start + adjustmentPageSize,total)} จาก ${total} รายการ</span><div><button class="ghost" onclick="changeAdjustmentPage(-1)" ${adjustmentPage === 1 ? 'disabled' : ''}>ก่อนหน้า</button><span>หน้า ${adjustmentPage} / ${pages}</span><button class="ghost" onclick="changeAdjustmentPage(1)" ${adjustmentPage === pages ? 'disabled' : ''}>ถัดไป</button></div></nav>`);
+}
+
+function changeAdjustmentPage(direction) {
+  adjustmentPage += direction;
+  renderAdjustmentPage();
+}
 function clearReceiveForm() {
   $('rSupplier').value = '';
   ['rSku','rLoc','rQty','rLot','rMfg','rExp','rRef'].forEach(id => $(id).value = '');
@@ -356,4 +422,152 @@ function showIssueHistory(message = '') {
   $('issueHistoryMsg').className = 'msg success';
   $('issueHistoryMsg').textContent = message;
   return loadIssueHistory();
+}
+let countInventory = [], countLocations = [], countProducts = [], countLoading = false, countSaving = false, countLoadId = 0;
+
+async function loadCountInventory() {
+  const loadId = ++countLoadId;
+  countLoading = true;
+  updateCountPreview();
+  try {
+    const [inventory, locations, products] = await Promise.all([api('/api/inventory'), api('/api/locations'), api('/api/products')]);
+    if (loadId !== countLoadId) return;
+    countInventory = inventory || [];
+    countLocations = locations || [];
+    countProducts = products || [];
+  } catch (e) {
+    if (loadId !== countLoadId) return;
+    countInventory = []; countLocations = []; countProducts = [];
+    $('stockCountMsg').className = 'msg error';
+    $('stockCountMsg').textContent = 'โหลดข้อมูลตรวจนับไม่สำเร็จ: ' + e.message;
+  }
+  if (loadId !== countLoadId) return;
+  countLoading = false;
+  renderCountLocations();
+}
+
+function renderCountLocations() {
+  const selected = $('cLoc').value;
+  const found = $('cMode').value === 'found';
+  const ids = new Set(countInventory.map(x => x.location_id));
+  const locations = countLocations.filter(x => found || ids.has(x.id));
+  $('cLoc').innerHTML = '<option value="">เลือก Location</option>' + locations.map(x => `<option value="${esc(x.code)}">${esc(x.code)} - ${esc(x.name)} (${esc(x.warehouse_code)})</option>`).join('');
+  $('cLoc').value = locations.some(x => x.code === selected) ? selected : '';
+  renderCountProducts();
+}
+
+function countProductOptions() {
+  const location = countLocations.find(x => x.code === $('cLoc').value);
+  if (!location) return [];
+  const ids = new Set(countInventory.filter(x => x.location_id === location.id).map(x => x.product_id));
+  return countProducts.filter(x => $('cMode').value === 'found' ? !ids.has(x.id) : ids.has(x.id));
+}
+
+function renderCountProducts() {
+  const selected = $('cSku').value, products = countProductOptions();
+  $('cSku').innerHTML = '<option value="">เลือกสินค้า</option>' + products.map(x => `<option value="${esc(x.sku)}">${esc(x.sku)} - ${esc(x.name)}</option>`).join('');
+  $('cSku').value = products.some(x => x.sku === selected) ? selected : products.length === 1 ? products[0].sku : '';
+  resetCountQuantity();
+}
+
+function resetCountQuantity() {
+  $('cQty').value = '';
+  updateCountPreview();
+}
+
+function countSelection() {
+  const product = countProductOptions().find(x => x.sku === $('cSku').value);
+  const location = countLocations.find(x => x.code === $('cLoc').value);
+  if (!product || !location) return null;
+  const stock = countInventory.find(x => x.product_id === product.id && x.location_id === location.id);
+  return {product, location, qty: Number(stock?.qty || 0)};
+}
+
+function updateCountPreview() {
+  const selection = countSelection(), raw = $('cQty').value, qty = Number(raw);
+  const busy = countLoading || countSaving;
+  $('cMode').disabled = busy;
+  $('cLoc').disabled = busy || $('cLoc').options.length <= 1;
+  $('cSku').disabled = busy || !countProductOptions().length;
+  $('cQty').disabled = busy || !selection;
+  $('countSubmit').disabled = busy;
+  $('countSubmit').textContent = countLoading ? 'กำลังโหลด...' : countSaving ? 'กำลังบันทึก...' : 'บันทึกผลตรวจนับ';
+  $('countSystem').textContent = selection ? `ยอดในระบบ ${fmt(selection.qty)} ${selection.product.unit}` : !$('cLoc').value ? 'เลือก Location เพื่อเริ่มตรวจนับ (รวมรายการที่ยอดเป็น 0)' : 'ไม่มีสินค้าที่เลือกได้ในรูปแบบนี้ หรือยังไม่ได้เลือกสินค้า';
+  $('countDifference').textContent = !selection || !raw.trim() ? '' : !Number.isFinite(qty) || qty < 0 ? 'กรุณาระบุจำนวนตั้งแต่ 0 ขึ้นไป' : `ผลต่าง ${fmt(qty - selection.qty)} ${selection.product.unit} — ${qty === selection.qty ? 'ยอดตรงกับระบบ' : 'ต้องขออนุมัติปรับยอดก่อนเปลี่ยนสต็อก'}`;
+}
+
+async function submitStockCount() {
+  if (countLoading || countSaving) return;
+  const selection = countSelection(), raw = $('cQty').value, qty = Number(raw);
+  let error = '', field = $('cLoc');
+  if (!$('cLoc').value) error = 'กรุณาเลือก Location ที่ต้องการตรวจนับ';
+  else if (!selection) { error = 'กรุณาเลือกสินค้าที่ต้องการตรวจนับ'; field = $('cSku'); }
+  else if (!raw.trim() || !Number.isFinite(qty) || qty < 0) { error = 'กรุณากรอกจำนวนที่นับได้จริงตั้งแต่ 0 ขึ้นไป'; field = $('cQty'); }
+  if (error) { $('stockCountMsg').className = 'msg error'; $('stockCountMsg').textContent = error; alert(error); field.focus(); return; }
+  if (!confirm(`ยืนยันผลตรวจนับ ${selection.product.name} ที่ ${selection.location.code}\nยอดในระบบ ${fmt(selection.qty)} / นับได้ ${fmt(qty)} / ผลต่าง ${fmt(qty-selection.qty)}\n${qty === selection.qty ? 'ยอดตรงกับระบบ' : 'ผลต่างจะส่งขออนุมัติปรับยอด'}`)) return;
+  countSaving = true;
+  updateCountPreview();
+  try {
+    const result = await postAction('/api/stock-count', {sku:selection.product.sku, location_code:selection.location.code, counted_qty:qty, reference:$('cRef').value.trim(), reason_code:$('cReason').value.trim()}, 'stockCountMsg');
+    await showCountHistory(result.data?.status === 'PENDING_APPROVAL' ? 'บันทึกผลตรวจนับแล้ว รออนุมัติปรับยอด' : 'บันทึกผลตรวจนับแล้ว ยอดตรงกับระบบ');
+    $('cRef').value = '';
+  } catch (e) { alert('ไม่สามารถบันทึกผลตรวจนับได้: ' + e.message); }
+  finally { countSaving = false; updateCountPreview(); }
+}
+
+async function openCountForm() {
+  if (countSaving) return;
+  $('cMode').value = 'inventory';
+  ['cLoc','cSku','cQty','cRef'].forEach(id => $(id).value = '');
+  $('cReason').value = 'CNT';
+  $('stockCountMsg').textContent = '';
+  $('stockCountMsg').className = 'msg';
+  $('countHistory').classList.add('hidden');
+  $('countForm').classList.remove('hidden');
+  $('pageSub').textContent = 'ตรวจนับสินค้า';
+  await loadCountInventory();
+  $('cLoc').focus();
+}
+
+function showCountHistory(message = '') {
+  $('countForm').classList.add('hidden');
+  $('countHistory').classList.remove('hidden');
+  $('pageSub').textContent = 'ประวัติการตรวจนับสินค้า';
+  $('countHistoryMsg').className = 'msg success';
+  $('countHistoryMsg').textContent = message;
+  return loadStockCounts();
+}
+
+const countHistoryPageSize = 5;
+let countHistoryRows = [], countHistoryPage = 1, countHistoryLoadId = 0;
+
+async function loadStockCounts() {
+  const loadId = ++countHistoryLoadId;
+  countHistoryRows = [];
+  countHistoryPage = 1;
+  $('stockCountTable').textContent = 'กำลังโหลดประวัติการตรวจนับ...';
+  try {
+    const rows = await api('/api/stock-counts');
+    if (loadId !== countHistoryLoadId) return;
+    countHistoryRows = rows || [];
+    renderCountHistory();
+  } catch (e) {
+    if (loadId !== countHistoryLoadId) return;
+    $('stockCountTable').textContent = 'ไม่สามารถโหลดประวัติการตรวจนับ: ' + e.message;
+  }
+}
+
+function renderCountHistory() {
+  const total = countHistoryRows.length, pages = Math.max(1, Math.ceil(total / countHistoryPageSize));
+  countHistoryPage = Math.max(1, Math.min(countHistoryPage, pages));
+  const start = (countHistoryPage - 1) * countHistoryPageSize;
+  const target = $('stockCountTable');
+  target.innerHTML = table(['วันที่นับ','เอกสาร','SKU','สินค้า','Location','ยอดในระบบ','นับได้จริง','ผลต่าง','สถานะ','ผู้ตรวจนับ'], countHistoryRows.slice(start, start + countHistoryPageSize).map(x => `<tr><td>${dateFmt(x.created_at)}</td><td>${esc(x.document_no)}</td><td>${esc(x.product?.sku)}</td><td>${esc(x.product?.name)}</td><td>${esc(x.location?.code)}</td><td>${fmt(x.system_qty)}</td><td>${fmt(x.counted_qty)}</td><td>${fmt(x.difference)}</td><td>${badge(x.status)}</td><td>${esc(x.created_by)}</td></tr>`));
+  if (!total) target.querySelector('.empty').textContent = 'ยังไม่มีประวัติการตรวจนับสินค้า';
+  target.insertAdjacentHTML('beforeend', `<nav class="master-pagination" aria-label="หน้าประวัติการตรวจนับ"><span role="status">แสดง ${total ? start + 1 : 0}–${Math.min(start + countHistoryPageSize,total)} จาก ${total} รายการ</span><div><button class="ghost" onclick="changeCountHistoryPage(-1)" ${countHistoryPage === 1 ? 'disabled' : ''}>ก่อนหน้า</button><span>หน้า ${countHistoryPage} / ${pages}</span><button class="ghost" onclick="changeCountHistoryPage(1)" ${countHistoryPage === pages ? 'disabled' : ''}>ถัดไป</button></div></nav>`);
+}
+
+function changeCountHistoryPage(direction) {
+  countHistoryPage += direction;
+  renderCountHistory();
 }
