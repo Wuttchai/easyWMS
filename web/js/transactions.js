@@ -1,26 +1,98 @@
 async function postAction(url,body,msgId){const m=$(msgId);try{const d=await api(url,{method:'POST',body:JSON.stringify(body)});m.className='msg success';m.textContent=(d.message||'completed')+' ✓';loadDashboard();return d}catch(e){m.className='msg error';m.textContent=e.message;throw e}}
-async function submitMovement(type){if(type==='issue')return submitIssue();if(type==='receive'&&$('receiveSubmit').disabled)return;const p=type==='receive'?'r':'i',body={sku:$(p+'Sku').value,location_code:$(p+'Loc').value,qty:Number($(p+'Qty').value),lot_no:$(p+'Lot').value,reference:$(p+'Ref').value,reason_code:$(p+'Reason').value};if(type==='receive'){body.supplier_code=$('rSupplier').value;if($('rMfg').value)body.mfg_date=new Date($('rMfg').value+'T00:00:00Z').toISOString();if($('rExp').value)body.exp_date=new Date($('rExp').value+'T00:00:00Z').toISOString()}if(type==='receive')$('receiveSubmit').disabled=true;try{await postAction('/api/'+type,body,type+'Msg');if(type==='receive'){clearReceiveForm();showReceiveHistory('รับสินค้าเข้าคลังเรียบร้อยแล้ว');loadLocations()}}catch{}finally{if(type==='receive')$('receiveSubmit').disabled=false}}
+async function submitMovement(type){if(type==='issue')return submitIssue();if(type==='receive'&&$('receiveSubmit').disabled)return;const p=type==='receive'?'r':'i',body={sku:$(p+'Sku').value,location_code:$(p+'Loc').value,qty:Number($(p+'Qty').value),lot_no:$(p+'Lot').value,reference:$(p+'Ref').value,reason_code:$(p+'Reason').value};if(type==='receive'){body.supplier_code=$('rSupplier').value;if($('rMfg').value)body.mfg_date=new Date($('rMfg').value+'T00:00:00Z').toISOString();if($('rExp').value)body.exp_date=new Date($('rExp').value+'T00:00:00Z').toISOString()}if(type==='receive')$('receiveSubmit').disabled=true;try{await postAction('/api/'+type,body,type+'Msg');if(type==='receive'){clearReceiveForm();showReceiveHistory('รับสินค้าเข้าคลังเรียบร้อยแล้ว');loadLocations()}}catch(e){alert(e.message)}finally{if(type==='receive')$('receiveSubmit').disabled=false}}
 async function submitTransfer() {
   if ($('transferSubmit').disabled) return;
+  if (!$('tFrom').value) {
+    $('transferMsg').className = 'msg error';
+    $('transferMsg').textContent = 'เลือกต้นทางที่มีสินค้าใน Inventory';
+    $('transferMsg').textContent = validationMessage($('transferMsg').textContent);
+    alert($('transferMsg').textContent);
+    $('tFrom').focus();
+    return;
+  }
   $('transferSubmit').disabled = true;
   try {
     await postAction('/api/transfer',{sku:$('tSku').value,from_location:$('tFrom').value,to_location:$('tTo').value,qty:Number($('tQty').value),reference:$('tRef').value,reason_code:$('tReason').value},'transferMsg');
     await showTransferHistory('ย้ายสินค้าเรียบร้อยแล้ว');
     await loadLocations();
-  } catch {} finally { $('transferSubmit').disabled = false; }
+  } catch (e) { alert(e.message); } finally { $('transferSubmit').disabled = false; }
 }
 
 async function openTransferForm() {
   if ($('transferSubmit').disabled) return;
   ['tSku','tFrom','tTo','tQty','tRef'].forEach(id => $(id).value = '');
+  transferSkuAuto = false;
+  $('tProductPicker').classList.add('hidden');
   $('tReason').value = 'TRF';
   $('transferMsg').textContent = '';
   $('transferMsg').className = 'msg';
   $('transferHistory').classList.add('hidden');
   $('transferForm').classList.remove('hidden');
   $('pageSub').textContent = 'ย้ายสินค้าระหว่าง Location';
-  await loadLocations();
-  $('tSku').focus();
+  await Promise.all([loadLocations(), loadTransferSources()]);
+  $('tFrom').focus();
+}
+
+let transferInventory = [], transferSourceLoadId = 0;
+let transferSkuAuto = false;
+
+async function loadTransferSources() {
+  const loadId = ++transferSourceLoadId;
+  transferInventory = [];
+  $('tFrom').disabled = true;
+  $('tFrom').innerHTML = '<option value="">กำลังโหลด Inventory...</option>';
+  try {
+    const rows = await api('/api/inventory');
+    if (loadId !== transferSourceLoadId) return;
+    transferInventory = (rows || []).filter(row => Number(row.qty) > 0 && row.location?.code);
+    updateTransferSources();
+  } catch (e) {
+    if (loadId !== transferSourceLoadId) return;
+    $('tFrom').innerHTML = '<option value="">โหลด Inventory ไม่สำเร็จ</option>';
+    $('transferMsg').className = 'msg error';
+    $('transferMsg').textContent = e.message;
+  }
+}
+
+function updateTransferSources() {
+  const selected = $('tFrom').value;
+  const sku = transferSkuAuto ? '' : $('tSku').value.trim();
+  const rows = transferInventory.filter(row => !sku || row.product?.sku === sku || row.product?.barcode === sku);
+  const locations = [...new Map(rows.map(row => [row.location.code, row.location])).values()];
+  $('tFrom').innerHTML = `<option value="">${locations.length ? 'เลือกต้นทางจาก Inventory' : 'ไม่พบสต็อกคงเหลือ'}</option>` + locations.map(location => {
+    const stock = rows.filter(row => row.location.code === location.code).map(row => `${row.product?.sku || '-'}: ${fmt(row.qty)} ${row.product?.unit || ''}`).join(', ');
+    return `<option value="${esc(location.code)}">${esc(location.code)} - ${esc(stock)}</option>`;
+  }).join('');
+  $('tFrom').value = locations.some(location => location.code === selected) ? selected : '';
+  $('tFrom').disabled = !locations.length;
+  updateTransferProducts(false);
+}
+
+function editTransferSku() {
+  transferSkuAuto = false;
+  updateTransferSources();
+}
+
+function updateTransferProducts(autoFill = true) {
+  const rows = transferInventory.filter(row => row.location.code === $('tFrom').value && row.product?.sku);
+  const products = [...new Map(rows.map(row => [row.product.sku, row.product])).values()];
+  const current = $('tSku').value.trim();
+  const matching = products.find(product => product.sku === current || product.barcode === current);
+  $('tProduct').innerHTML = '<option value="">เลือกสินค้า</option>' + products.map(product => `<option value="${esc(product.sku)}">${esc(product.sku)} - ${esc(product.name)}</option>`).join('');
+  $('tProductPicker').classList.toggle('hidden', products.length <= 1);
+  $('tProduct').value = matching?.sku || '';
+  if (autoFill) {
+    $('tSku').value = products.length === 1 ? products[0].sku : matching?.sku || '';
+    $('tProduct').value = $('tSku').value;
+    transferSkuAuto = true;
+    updateTransferSources();
+  }
+}
+
+function selectTransferProduct() {
+  $('tSku').value = $('tProduct').value;
+  transferSkuAuto = true;
+  updateTransferSources();
 }
 
 function showTransferHistory(message = '') {
@@ -53,13 +125,7 @@ async function loadTransferHistory() {
 }
 
 function renderTransferPage() {
-  const total = transferRows.length, pages = Math.max(1, Math.ceil(total / transferPageSize));
-  transferPage = Math.max(1, Math.min(transferPage, pages));
-  const start = (transferPage - 1) * transferPageSize;
-  const target = $('transferTable');
-  target.innerHTML = table(['วันที่ย้าย','เอกสารอ้างอิง','SKU','สินค้า','ต้นทาง','ปลายทาง','จำนวน','หน่วย','ผู้ย้าย'], transferRows.slice(start, start + transferPageSize).map(x => `<tr><td>${dateFmt(x.created_at)}</td><td>${esc(x.reference || '-')}</td><td>${esc(x.product?.sku || '-')}</td><td>${esc(x.product?.name || '-')}</td><td>${esc(x.location?.code || '-')}</td><td>${esc(x.note?.startsWith('To ') ? x.note.slice(3) : '-')}</td><td>${fmt(x.qty)}</td><td>${esc(x.product?.unit || '-')}</td><td>${esc(x.created_by || '-')}</td></tr>`));
-  if (!total) target.querySelector('.empty').textContent = 'ยังไม่มีประวัติการย้ายสินค้า';
-  target.insertAdjacentHTML('beforeend', `<nav class="master-pagination" aria-label="หน้าประวัติการย้ายสินค้า"><span role="status">แสดง ${total ? start + 1 : 0}–${Math.min(start + transferPageSize,total)} จาก ${total} รายการ</span><div><button class="ghost" onclick="changeTransferPage(-1)" ${transferPage === 1 ? 'disabled' : ''}>ก่อนหน้า</button><span>หน้า ${transferPage} / ${pages}</span><button class="ghost" onclick="changeTransferPage(1)" ${transferPage === pages ? 'disabled' : ''}>ถัดไป</button></div></nav>`);
+  renderSearchTable('transferTable', table(['วันที่ย้าย','เอกสารอ้างอิง','SKU','สินค้า','ต้นทาง','ปลายทาง','จำนวน','หน่วย','ผู้ย้าย'], transferRows.map(x => `<tr><td data-search-date="${dateSearchValue(x.created_at)}">${dateFmt(x.created_at)}</td><td>${esc(x.reference || '-')}</td><td>${esc(x.product?.sku || '-')}</td><td>${esc(x.product?.name || '-')}</td><td>${esc(x.location?.code || '-')}</td><td>${esc(x.note?.startsWith('To ') ? x.note.slice(3) : '-')}</td><td>${fmt(x.qty)}</td><td>${esc(x.product?.unit || '-')}</td><td>${esc(x.created_by || '-')}</td></tr>`)), {page: transferPage, pageSize: transferPageSize, onPage: page => { transferPage = page; }});
 }
 
 function changeTransferPage(direction) {
@@ -72,7 +138,7 @@ async function submitAdjustment() {
   try {
     await postAction('/api/adjustments',{sku:$('aSku').value,location_code:$('aLoc').value,direction:$('aDirection').value,qty:Number($('aQty').value),reference:$('aRef').value,reason_code:$('aReason').value,note:$('aNote').value},'adjustmentMsg');
     await showAdjustmentHistory('ส่งคำขอปรับสต็อกแล้ว รออนุมัติ');
-  } catch {} finally { $('adjustmentSubmit').disabled = false; }
+  } catch (e) { alert(e.message); } finally { $('adjustmentSubmit').disabled = false; }
 }
 
 async function openAdjustmentForm() {
@@ -117,17 +183,11 @@ async function loadAdjustments(page = 1) {
 }
 
 function renderAdjustmentPage() {
-  const total = adjustmentRows.length, pages = Math.max(1, Math.ceil(total / adjustmentPageSize));
-  adjustmentPage = Math.max(1, Math.min(adjustmentPage, pages));
-  const start = (adjustmentPage - 1) * adjustmentPageSize;
-  const rows = adjustmentRows.slice(start, start + adjustmentPageSize).map(x => {
+  const rows = adjustmentRows.map(x => {
     const can = me && ['ADMIN','SUPERVISOR'].includes(me.role) && x.status === 'PENDING';
-    return `<tr><td>${dateFmt(x.created_at)}</td><td>${esc(x.document_no)}</td><td>${esc(x.product?.sku)}</td><td>${esc(x.location?.code)}</td><td>${badge(x.direction)}</td><td>${fmt(x.qty)}</td><td>${esc(x.reason_code || '-')}</td><td>${badge(x.status)}</td><td>${esc(x.requested_by || '-')}</td><td>${can ? `<button class="mini" onclick="adjAction('${esc(x.id)}','approve')">Approve</button> <button class="mini danger" onclick="adjAction('${esc(x.id)}','reject')">Reject</button>` : '-'}</td></tr>`;
+    return `<tr><td data-search-date="${dateSearchValue(x.created_at)}">${dateFmt(x.created_at)}</td><td>${esc(x.document_no)}</td><td>${esc(x.product?.sku)}</td><td>${esc(x.location?.code)}</td><td>${badge(x.direction)}</td><td>${fmt(x.qty)}</td><td>${esc(x.reason_code || '-')}</td><td>${badge(x.status)}</td><td>${esc(x.requested_by || '-')}</td><td>${can ? `<button class="mini" onclick="adjAction('${esc(x.id)}','approve')">Approve</button> <button class="mini danger" onclick="adjAction('${esc(x.id)}','reject')">Reject</button>` : '-'}</td></tr>`;
   });
-  const target = $('adjustmentTable');
-  target.innerHTML = table(['วันที่','เอกสาร','SKU','Location','ประเภท','จำนวน','เหตุผล','สถานะ','ผู้ขอ','ดำเนินการ'], rows);
-  if (!total) target.querySelector('.empty').textContent = 'ยังไม่มีคำขอปรับสต็อก';
-  target.insertAdjacentHTML('beforeend', `<nav class="master-pagination" aria-label="หน้ารายการคำขอปรับสต็อก"><span role="status">แสดง ${total ? start + 1 : 0}–${Math.min(start + adjustmentPageSize,total)} จาก ${total} รายการ</span><div><button class="ghost" onclick="changeAdjustmentPage(-1)" ${adjustmentPage === 1 ? 'disabled' : ''}>ก่อนหน้า</button><span>หน้า ${adjustmentPage} / ${pages}</span><button class="ghost" onclick="changeAdjustmentPage(1)" ${adjustmentPage === pages ? 'disabled' : ''}>ถัดไป</button></div></nav>`);
+  renderSearchTable('adjustmentTable', table(['วันที่','เอกสาร','SKU','Location','ประเภท','จำนวน','เหตุผล','สถานะ','ผู้ขอ','ดำเนินการ'], rows), {page: adjustmentPage, pageSize: adjustmentPageSize, onPage: page => { adjustmentPage = page; }});
 }
 
 function changeAdjustmentPage(direction) {
@@ -135,6 +195,7 @@ function changeAdjustmentPage(direction) {
   renderAdjustmentPage();
 }
 function clearReceiveForm() {
+  $('rProduct').value = '';
   $('rSupplier').value = '';
   ['rSku','rLoc','rQty','rLot','rMfg','rExp','rRef'].forEach(id => $(id).value = '');
   $('rReason').value = 'RCV';
@@ -147,8 +208,40 @@ async function openReceiveForm() {
   $('receiveHistory').classList.add('hidden');
   $('receiveForm').classList.remove('hidden');
   $('pageSub').textContent = 'รับสินค้าเข้าคลัง';
-  await Promise.all([loadLocations(), loadReceiveSuppliers()]);
-  $('rSku').focus();
+  await Promise.all([loadLocations(), loadReceiveSuppliers(), loadReceiveProducts()]);
+  ($('rProduct').disabled ? $('rSku') : $('rProduct')).focus();
+}
+
+let receiveProducts = [], receiveProductsLoadId = 0;
+
+async function loadReceiveProducts() {
+  const loadId = ++receiveProductsLoadId;
+  receiveProducts = [];
+  $('rProduct').disabled = true;
+  $('rProduct').innerHTML = '<option value="">เลือกสินค้า</option>';
+  $('receiveProductHint').textContent = 'กำลังโหลดสินค้า...';
+  try {
+    const products = await api('/api/products');
+    if (loadId !== receiveProductsLoadId) return;
+    receiveProducts = products || [];
+    $('rProduct').innerHTML += receiveProducts.map(product => `<option value="${esc(product.sku)}">${esc(product.sku)} - ${esc(product.name)}${product.unit ? ' (' + esc(product.unit) + ')' : ''}</option>`).join('');
+    $('rProduct').disabled = !receiveProducts.length;
+    $('receiveProductHint').textContent = receiveProducts.length ? '' : 'ยังไม่มีสินค้า เพิ่มได้ที่ Master Data > Product';
+    syncReceiveProduct();
+  } catch (e) {
+    if (loadId !== receiveProductsLoadId) return;
+    $('receiveProductHint').textContent = 'โหลดสินค้าไม่สำเร็จ: ' + e.message;
+  }
+}
+
+function selectReceiveProduct() {
+  $('rSku').value = $('rProduct').value;
+}
+
+function syncReceiveProduct() {
+  const value = $('rSku').value.trim();
+  const product = receiveProducts.find(product => product.sku === value || (product.barcode && product.barcode === value));
+  $('rProduct').value = product?.sku || '';
 }
 
 async function loadReceiveSuppliers() {
@@ -176,6 +269,13 @@ function showReceiveHistory(message = '') {
 
 const receivePageSize = 5;
 let receivePage = 1, receiveRows = [], receiveLoadId = 0;
+const receiveHeaders = ['วันที่รับ','เอกสารอ้างอิง','ผู้ขาย','SKU','สินค้า','คลังสินค้า','Location','จำนวน','หน่วย','Lot / Batch','ผู้รับ'];
+
+function receiveCells(x) {
+  return [dateFmt(x.created_at), x.reference || '-', x.supplier_code ? x.supplier_code + ' - ' + x.supplier_name : '-', x.product?.sku || '-', x.product?.name || '-', x.location?.warehouse_code || '-', x.location?.code || '-', fmt(x.qty), x.product?.unit || '-', x.lot_no || '-', x.created_by || '-'];
+}
+
+
 
 async function loadReceiveHistory() {
   const loadId = ++receiveLoadId;
@@ -195,18 +295,9 @@ async function loadReceiveHistory() {
 }
 
 function renderReceivePage() {
-  const target = $('receiveTable');
-  const total = receiveRows.length;
-  const pages = Math.max(1, Math.ceil(total / receivePageSize));
-  receivePage = Math.max(1, Math.min(receivePage, pages));
-  const start = (receivePage - 1) * receivePageSize;
-  const rows = receiveRows.slice(start, start + receivePageSize);
-  target.innerHTML = table(
-      ['วันที่รับ','เอกสารอ้างอิง','ผู้ขาย','SKU','สินค้า','คลังสินค้า','Location','จำนวน','หน่วย','Lot / Batch','ผู้รับ'],
-      rows.map(x => `<tr><td>${dateFmt(x.created_at)}</td><td>${esc(x.reference || '-')}</td><td>${esc(x.supplier_code ? x.supplier_code + ' - ' + x.supplier_name : '-')}</td><td>${esc(x.product?.sku || '-')}</td><td>${esc(x.product?.name || '-')}</td><td>${esc(x.location?.warehouse_code || '-')}</td><td>${esc(x.location?.code || '-')}</td><td>${fmt(x.qty)}</td><td>${esc(x.product?.unit || '-')}</td><td>${esc(x.lot_no || '-')}</td><td>${esc(x.created_by || '-')}</td></tr>`)
-    );
-  if (!total) target.querySelector('.empty').textContent = 'ยังไม่มีประวัติการรับสินค้า';
-  target.insertAdjacentHTML('beforeend', `<nav class="master-pagination" aria-label="หน้าประวัติการรับสินค้า"><span role="status">แสดง ${total ? start + 1 : 0}–${Math.min(start + receivePageSize, total)} จาก ${total} รายการ</span><div><button class="ghost" onclick="changeReceivePage(-1)" ${receivePage === 1 ? 'disabled' : ''}>ก่อนหน้า</button><span>หน้า ${receivePage} / ${pages}</span><button class="ghost" onclick="changeReceivePage(1)" ${receivePage === pages ? 'disabled' : ''}>ถัดไป</button></div></nav>`);
+  renderSearchTable('receiveTable', table(receiveHeaders, receiveRows.map(x =>
+    `<tr>${receiveCells(x).map((value, index) => `<td${index === 0 ? ` data-search-date="${dateSearchValue(x.created_at)}"` : ''}>${esc(value)}</td>`).join('')}</tr>`
+  )), {page: receivePage, pageSize: receivePageSize, onPage: page => { receivePage = page; }});
 }
 
 function changeReceivePage(direction) {
@@ -259,7 +350,7 @@ function updateIssueItems() {
     if (untracked > 0) issueChoices.push({key: stock.id, stock, lot: '', expiry: null, qty: untracked});
   }
   if (!issueChoices.some(x => x.key === issueChoiceKey)) issueChoiceKey = issueChoices.length === 1 ? issueChoices[0].key : '';
-  $('issueItems').innerHTML = !$('iLoc').value ? '<p>เลือก Location เพื่อดูสินค้าที่เบิกได้</p>' : table(['เลือก','สินค้า','Lot','หมดอายุ','คงเหลือ'], issueChoices.map((x,i) => `<tr><td><input type="radio" name="issueChoice" aria-label="${esc(x.stock.product.sku + ' ' + (x.lot || 'ไม่ระบุ Lot'))}" ${x.key === issueChoiceKey ? 'checked' : ''} onchange="selectIssueItem(${i})" style="width:auto"></td><td>${esc(x.stock.product.sku)}<br>${esc(x.stock.product.name)}</td><td>${esc(x.lot || 'ไม่มี Lot')}</td><td>${dFmt(x.expiry)}</td><td>${fmt(x.qty)} ${esc(x.stock.product.unit)}</td></tr>`));
+  $('issueItems').innerHTML = !$('iLoc').value ? '<p>เลือก Location เพื่อดูสินค้าที่เบิกได้</p>' : table(['เลือก','สินค้า','Lot','หมดอายุ','คงเหลือ'], issueChoices.map((x,i) => `<tr><td><input type="radio" name="issueChoice" aria-label="${esc(x.stock.product.sku + ' ' + (x.lot || 'ไม่ระบุ Lot'))}" ${x.key === issueChoiceKey ? 'checked' : ''} onchange="selectIssueItem(${i})" style="width:auto"></td><td>${esc(x.stock.product.sku)}<br>${esc(x.stock.product.name)}</td><td>${esc(x.lot || 'ไม่มี Lot')}</td><td data-search-date="${dateSearchValue(x.expiry)}">${dFmt(x.expiry)}</td><td>${fmt(x.qty)} ${esc(x.stock.product.unit)}</td></tr>`));
   updateIssueAvailable();
 }
 
@@ -305,7 +396,7 @@ async function submitIssue() {
     error = 'กรุณาเลือกลูกค้าสำหรับการเบิกส่งลูกค้า';
     field = $('iCustomer');
   }
-  if (error) {
+  if (error) { error = validationMessage(error);
     $('issueMsg').className = 'msg error';
     $('issueMsg').textContent = error;
     alert(error);
@@ -354,18 +445,10 @@ async function loadIssueHistory() {
 }
 
 function renderIssuePage() {
-  const target = $('issueTable');
-  const total = issueRows.length;
-  const pages = Math.max(1, Math.ceil(total / issuePageSize));
-  issuePage = Math.max(1, Math.min(issuePage, pages));
-  const start = (issuePage - 1) * issuePageSize;
-  const rows = issueRows.slice(start, start + issuePageSize);
-  target.innerHTML = table(
+  renderSearchTable('issueTable', table(
       ['วันที่เบิก','เอกสารอ้างอิง','ลูกค้า','SKU','สินค้า','คลังสินค้า','Location','จำนวน','หน่วย','Lot / Batch','ผู้เบิก'],
-      rows.map(x => `<tr><td>${dateFmt(x.created_at)}</td><td>${esc(x.reference || '-')}</td><td>${esc(x.customer_code ? x.customer_code + ' - ' + x.customer_name : x.issue_purpose === 'INTERNAL' ? 'เบิกใช้ภายใน' : '-')}</td><td>${esc(x.product?.sku || '-')}</td><td>${esc(x.product?.name || '-')}</td><td>${esc(x.location?.warehouse_code || '-')}</td><td>${esc(x.location?.code || '-')}</td><td>${fmt(x.qty)}</td><td>${esc(x.product?.unit || '-')}</td><td>${esc(x.lot_no || '-')}</td><td>${esc(x.created_by || '-')}</td></tr>`)
-    );
-  if (!total) target.querySelector('.empty').textContent = 'ยังไม่มีประวัติการเบิกสินค้า';
-  target.insertAdjacentHTML('beforeend', `<nav class="master-pagination" aria-label="หน้าประวัติการเบิกสินค้า"><span role="status">แสดง ${total ? start + 1 : 0}–${Math.min(start + issuePageSize, total)} จาก ${total} รายการ</span><div><button class="ghost" onclick="changeIssuePage(-1)" ${issuePage === 1 ? 'disabled' : ''}>ก่อนหน้า</button><span>หน้า ${issuePage} / ${pages}</span><button class="ghost" onclick="changeIssuePage(1)" ${issuePage === pages ? 'disabled' : ''}>ถัดไป</button></div></nav>`);
+      issueRows.map(x => `<tr><td data-search-date="${dateSearchValue(x.created_at)}">${dateFmt(x.created_at)}</td><td>${esc(x.reference || '-')}</td><td>${esc(x.customer_code ? x.customer_code + ' - ' + x.customer_name : x.issue_purpose === 'INTERNAL' ? 'เบิกใช้ภายใน' : '-')}</td><td>${esc(x.product?.sku || '-')}</td><td>${esc(x.product?.name || '-')}</td><td>${esc(x.location?.warehouse_code || '-')}</td><td>${esc(x.location?.code || '-')}</td><td>${fmt(x.qty)}</td><td>${esc(x.product?.unit || '-')}</td><td>${esc(x.lot_no || '-')}</td><td>${esc(x.created_by || '-')}</td></tr>`)
+    ), {page: issuePage, pageSize: issuePageSize, onPage: page => { issuePage = page; }});
 }
 
 function changeIssuePage(direction) {
@@ -503,7 +586,7 @@ async function submitStockCount() {
   if (!$('cLoc').value) error = 'กรุณาเลือก Location ที่ต้องการตรวจนับ';
   else if (!selection) { error = 'กรุณาเลือกสินค้าที่ต้องการตรวจนับ'; field = $('cSku'); }
   else if (!raw.trim() || !Number.isFinite(qty) || qty < 0) { error = 'กรุณากรอกจำนวนที่นับได้จริงตั้งแต่ 0 ขึ้นไป'; field = $('cQty'); }
-  if (error) { $('stockCountMsg').className = 'msg error'; $('stockCountMsg').textContent = error; alert(error); field.focus(); return; }
+  if (error) { error = validationMessage(error); $('stockCountMsg').className = 'msg error'; $('stockCountMsg').textContent = error; alert(error); field.focus(); return; }
   if (!confirm(`ยืนยันผลตรวจนับ ${selection.product.name} ที่ ${selection.location.code}\nยอดในระบบ ${fmt(selection.qty)} / นับได้ ${fmt(qty)} / ผลต่าง ${fmt(qty-selection.qty)}\n${qty === selection.qty ? 'ยอดตรงกับระบบ' : 'ผลต่างจะส่งขออนุมัติปรับยอด'}`)) return;
   countSaving = true;
   updateCountPreview();
@@ -558,13 +641,7 @@ async function loadStockCounts() {
 }
 
 function renderCountHistory() {
-  const total = countHistoryRows.length, pages = Math.max(1, Math.ceil(total / countHistoryPageSize));
-  countHistoryPage = Math.max(1, Math.min(countHistoryPage, pages));
-  const start = (countHistoryPage - 1) * countHistoryPageSize;
-  const target = $('stockCountTable');
-  target.innerHTML = table(['วันที่นับ','เอกสาร','SKU','สินค้า','Location','ยอดในระบบ','นับได้จริง','ผลต่าง','สถานะ','ผู้ตรวจนับ'], countHistoryRows.slice(start, start + countHistoryPageSize).map(x => `<tr><td>${dateFmt(x.created_at)}</td><td>${esc(x.document_no)}</td><td>${esc(x.product?.sku)}</td><td>${esc(x.product?.name)}</td><td>${esc(x.location?.code)}</td><td>${fmt(x.system_qty)}</td><td>${fmt(x.counted_qty)}</td><td>${fmt(x.difference)}</td><td>${badge(x.status)}</td><td>${esc(x.created_by)}</td></tr>`));
-  if (!total) target.querySelector('.empty').textContent = 'ยังไม่มีประวัติการตรวจนับสินค้า';
-  target.insertAdjacentHTML('beforeend', `<nav class="master-pagination" aria-label="หน้าประวัติการตรวจนับ"><span role="status">แสดง ${total ? start + 1 : 0}–${Math.min(start + countHistoryPageSize,total)} จาก ${total} รายการ</span><div><button class="ghost" onclick="changeCountHistoryPage(-1)" ${countHistoryPage === 1 ? 'disabled' : ''}>ก่อนหน้า</button><span>หน้า ${countHistoryPage} / ${pages}</span><button class="ghost" onclick="changeCountHistoryPage(1)" ${countHistoryPage === pages ? 'disabled' : ''}>ถัดไป</button></div></nav>`);
+  renderSearchTable('stockCountTable', table(['วันที่นับ','เอกสาร','SKU','สินค้า','Location','ยอดในระบบ','นับได้จริง','ผลต่าง','สถานะ','ผู้ตรวจนับ'], countHistoryRows.map(x => `<tr><td data-search-date="${dateSearchValue(x.created_at)}">${dateFmt(x.created_at)}</td><td>${esc(x.document_no)}</td><td>${esc(x.product?.sku)}</td><td>${esc(x.product?.name)}</td><td>${esc(x.location?.code)}</td><td>${fmt(x.system_qty)}</td><td>${fmt(x.counted_qty)}</td><td>${fmt(x.difference)}</td><td>${badge(x.status)}</td><td>${esc(x.created_by)}</td></tr>`)), {page: countHistoryPage, pageSize: countHistoryPageSize, onPage: page => { countHistoryPage = page; }});
 }
 
 function changeCountHistoryPage(direction) {
