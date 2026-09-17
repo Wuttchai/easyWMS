@@ -36,9 +36,15 @@ func (h Handler) Login(c *gin.Context) {
 		return
 	}
 	var u models.Employee
-	if err := h.DB.Where("username=? AND active=?", req.Username, true).First(&u).Error; err != nil || u.PasswordHash != auth.HashPassword(req.Password) {
+	if err := h.DB.Where("username=? AND active=?", req.Username, true).First(&u).Error; err != nil || !auth.VerifyPassword(u.PasswordHash, req.Password) {
 		c.JSON(401, gin.H{"error": "invalid username or password"})
 		return
+	}
+	if !strings.HasPrefix(u.PasswordHash, "$2") {
+		if err := h.DB.Model(&u).Update("password_hash", auth.HashPassword(req.Password)).Error; err != nil {
+			c.JSON(500, gin.H{"error": "unable to upgrade password"})
+			return
+		}
 	}
 	token, _ := auth.Sign(h.JWTSecret, auth.Claims{UserID: u.ID.String(), Username: u.Username, Role: u.Role, Exp: auth.ExpiresIn(12)})
 	c.JSON(200, gin.H{"token": token, "user": gin.H{"id": u.ID, "name": u.Name, "username": u.Username, "role": u.Role}})
@@ -51,8 +57,13 @@ func (h Handler) Auth() gin.HandlerFunc {
 			c.AbortWithStatusJSON(401, gin.H{"error": "unauthorized"})
 			return
 		}
-		c.Set("username", cl.Username)
-		c.Set("role", cl.Role)
+		var account models.Employee
+		if err := h.DB.Where("id = ? AND active = ?", cl.UserID, true).First(&account).Error; err != nil {
+			c.AbortWithStatusJSON(401, gin.H{"error": "unauthorized"})
+			return
+		}
+		c.Set("username", account.Username)
+		c.Set("role", account.Role)
 		c.Set("user_id", cl.UserID)
 		c.Next()
 	}
@@ -450,8 +461,13 @@ func (h Handler) CreateEmployee(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	if req.Password == "" {
-		req.Password = "welcome123"
+	if len(req.Password) < 12 || len(req.Password) > 72 || strings.TrimSpace(req.Username) == "" || strings.TrimSpace(req.Code) == "" || strings.TrimSpace(req.Name) == "" {
+		c.JSON(400, gin.H{"error": "name, code and username are required; password must be 12 to 72 bytes"})
+		return
+	}
+	if req.Role != "ADMIN" && req.Role != "SUPERVISOR" && req.Role != "WAREHOUSE" {
+		c.JSON(400, gin.H{"error": "invalid role"})
+		return
 	}
 	r := models.Employee{ID: uuid.New(), Code: req.Code, Name: req.Name, Username: req.Username, PasswordHash: auth.HashPassword(req.Password), Role: req.Role, Email: req.Email, Active: true}
 	h.create(c, &r)

@@ -3,10 +3,12 @@ package auth
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"golang.org/x/crypto/bcrypt"
 	"strconv"
 	"strings"
 	"time"
@@ -20,8 +22,23 @@ type Claims struct {
 }
 
 func HashPassword(s string) string {
-	h := sha256.Sum256([]byte(s))
-	return fmt.Sprintf("%x", h[:])
+	hash, err := bcrypt.GenerateFromPassword([]byte(s), bcrypt.DefaultCost)
+	if err != nil {
+		panic(err)
+	} // Callers validate the bcrypt length limit before hashing.
+	return string(hash)
+}
+
+func VerifyPassword(hash, password string) bool {
+	if len(password) > 72 {
+		return false
+	}
+	if strings.HasPrefix(hash, "$2") {
+		return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
+	}
+	// Upgrade legacy hashes only after a successful login.
+	legacy := sha256.Sum256([]byte(password))
+	return len(hash) == 64 && subtle.ConstantTimeCompare([]byte(hash), []byte(fmt.Sprintf("%x", legacy[:]))) == 1
 }
 
 func Sign(secret string, c Claims) (string, error) {

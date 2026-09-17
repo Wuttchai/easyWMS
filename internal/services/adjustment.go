@@ -11,6 +11,9 @@ import (
 )
 
 func CreateAdjustment(db *gorm.DB, req AdjustmentRequest) (*models.Adjustment, error) {
+	if !validQuantity(req.Qty) {
+		return nil, errors.New("quantity must be greater than zero")
+	}
 	p, l, err := findProductLocation(db, req.SKU, req.LocationCode)
 	if err != nil {
 		return nil, err
@@ -36,12 +39,31 @@ func ApproveAdjustment(db *gorm.DB, id uuid.UUID, user string) (*models.Adjustme
 		if out.Status != "PENDING" {
 			return errors.New("adjustment is not pending")
 		}
+		if err := lockProduct(tx, out.ProductID); err != nil {
+			return err
+		}
 		inv, err := getInventoryForUpdate(tx, out.ProductID, out.LocationID)
 		if err != nil {
 			return err
 		}
 		typ := "ADJUST_IN"
+		var counts []models.StockCount
+		if err := tx.Where("adjustment_id=?", out.ID).Find(&counts).Error; err != nil {
+			return err
+		}
+		for _, count := range counts {
+			if inv.Qty != count.SystemQty {
+				return errors.New("stock changed since counting; reject and recount")
+			}
+		}
 		if out.Direction == "OUT" {
+			free, err := untrackedStock(tx, inv)
+			if err != nil {
+				return err
+			}
+			if out.Qty > free+0.0000001 {
+				return errors.New("lot-specific adjustment is required; cannot reduce tracked lot stock")
+			}
 			if inv.Qty < out.Qty {
 				return errors.New("insufficient stock for adjustment")
 			}
@@ -74,12 +96,16 @@ func RejectAdjustment(db *gorm.DB, id uuid.UUID, user string) (*models.Adjustmen
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&row, "id=?", id).Error; err != nil {
 			return err
 		}
-		if row.Status != "PENDING" { return errors.New("adjustment is not pending") }
+		if row.Status != "PENDING" {
+			return errors.New("adjustment is not pending")
+		}
 		now := time.Now()
 		row.Status = "REJECTED"
 		row.ApprovedBy = user
 		row.ApprovedAt = &now
-		if err := tx.Save(&row).Error; err != nil { return err }
+		if err := tx.Save(&row).Error; err != nil {
+			return err
+		}
 		return tx.Model(&models.StockCount{}).Where("adjustment_id = ? AND status = ?", row.ID, "PENDING_APPROVAL").Update("status", "REJECTED").Error
 	})
 	return &row, err

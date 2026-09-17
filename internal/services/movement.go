@@ -8,6 +8,15 @@ import (
 )
 
 func ApplyMovement(db *gorm.DB, typ string, req MovementRequest) error {
+	if !validQuantity(req.Qty) {
+		return errors.New("quantity must be greater than zero")
+	}
+	if typ != "IN" && typ != "OUT" {
+		return errors.New("invalid movement type")
+	}
+	if req.MfgDate != nil && req.ExpDate != nil && req.ExpDate.Before(*req.MfgDate) {
+		return errors.New("expiry date must not precede manufacturing date")
+	}
 	return db.Transaction(func(tx *gorm.DB) error {
 		var customer models.Customer
 		var supplier models.Supplier
@@ -45,11 +54,21 @@ func ApplyMovement(db *gorm.DB, typ string, req MovementRequest) error {
 		if err != nil {
 			return err
 		}
+		if err := lockProduct(tx, p.ID); err != nil {
+			return err
+		}
 		inv, err := getInventoryForUpdate(tx, p.ID, l.ID)
 		if err != nil {
 			return err
 		}
 		if typ == "OUT" {
+			untracked, err := untrackedStock(tx, inv)
+			if err != nil {
+				return err
+			}
+			if req.LotNo == "" && req.Qty > untracked+0.0000001 {
+				return errors.New("select a lot; untracked stock is insufficient")
+			}
 			if inv.Qty < req.Qty {
 				return errors.New("insufficient stock")
 			}
@@ -71,6 +90,9 @@ func ApplyMovement(db *gorm.DB, typ string, req MovementRequest) error {
 				}
 				lot.Qty -= req.Qty
 			} else {
+				if lot.Qty > 0 && (!datesEqual(lot.MfgDate, req.MfgDate) || !datesEqual(lot.ExpDate, req.ExpDate)) {
+					return errors.New("lot dates differ from existing stock")
+				}
 				lot.Qty += req.Qty
 				lot.MfgDate = req.MfgDate
 				lot.ExpDate = req.ExpDate

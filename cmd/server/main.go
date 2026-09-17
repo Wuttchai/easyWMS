@@ -12,6 +12,9 @@ import (
 
 func main() {
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		log.Fatal(err)
+	}
 	db, err := database.Connect(cfg)
 	if err != nil {
 		log.Fatal(err)
@@ -20,6 +23,9 @@ func main() {
 		log.Fatal(err)
 	}
 	r := gin.Default()
+	if err := r.SetTrustedProxies(nil); err != nil {
+		log.Fatal(err)
+	}
 	h := handlers.Handler{DB: db, JWTSecret: cfg.JWTSecret}
 	routes.Register(r, h)
 	log.Printf("EasyWMS Demo V3 running at http://localhost:%s", cfg.AppPort)

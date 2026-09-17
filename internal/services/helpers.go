@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"time"
 )
 
 func findProductLocation(tx *gorm.DB, sku, locationCode string) (models.Product, models.Location, error) {
@@ -18,6 +19,13 @@ func findProductLocation(tx *gorm.DB, sku, locationCode string) (models.Product,
 		return p, l, errors.New("location not found")
 	}
 	return p, l, nil
+}
+
+func datesEqual(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Equal(*b)
 }
 
 func getInventoryForUpdate(tx *gorm.DB, pid, lid uuid.UUID) (*models.Inventory, error) {

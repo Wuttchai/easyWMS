@@ -3,11 +3,13 @@ package services
 import (
 	"easywms-demo-v3/internal/models"
 	"errors"
-	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 func TransferStock(db *gorm.DB, req TransferRequest) error {
+	if !validQuantity(req.Qty) {
+		return errors.New("quantity must be greater than zero")
+	}
 	if req.FromLocation == req.ToLocation {
 		return errors.New("source and destination must differ")
 	}
@@ -20,6 +22,9 @@ func TransferStock(db *gorm.DB, req TransferRequest) error {
 		if err := tx.Where("code=?", req.ToLocation).First(&to).Error; err != nil {
 			return errors.New("destination not found")
 		}
+		if err := lockProduct(tx, p.ID); err != nil {
+			return err
+		}
 		a, err := getInventoryForUpdate(tx, p.ID, from.ID)
 		if err != nil {
 			return err
@@ -27,8 +32,17 @@ func TransferStock(db *gorm.DB, req TransferRequest) error {
 		if a.Qty < req.Qty {
 			return errors.New("insufficient stock")
 		}
+		if _, err := untrackedStock(tx, a); err != nil {
+			return err
+		}
 		b, err := getInventoryForUpdate(tx, p.ID, to.ID)
 		if err != nil {
+			return err
+		}
+		if _, err := untrackedStock(tx, b); err != nil {
+			return err
+		}
+		if err := transferLots(tx, p.ID, from.ID, to.ID, req.Qty, req.Reference, req.ReasonCode, req.CreatedBy); err != nil {
 			return err
 		}
 		a.Qty -= req.Qty
@@ -39,9 +53,6 @@ func TransferStock(db *gorm.DB, req TransferRequest) error {
 		if err := tx.Save(b).Error; err != nil {
 			return err
 		}
-		if err := tx.Create(&models.StockMovement{ID: uuid.New(), ProductID: p.ID, LocationID: from.ID, Type: "TRANSFER_OUT", Qty: req.Qty, Reference: req.Reference, ReasonCode: req.ReasonCode, Note: "To " + to.Code, CreatedBy: req.CreatedBy}).Error; err != nil {
-			return err
-		}
-		return tx.Create(&models.StockMovement{ID: uuid.New(), ProductID: p.ID, LocationID: to.ID, Type: "TRANSFER_IN", Qty: req.Qty, Reference: req.Reference, ReasonCode: req.ReasonCode, Note: "From " + from.Code, CreatedBy: req.CreatedBy}).Error
+		return nil
 	})
 }
