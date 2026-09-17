@@ -48,8 +48,10 @@ func Register(r *gin.Engine, h handlers.Handler) {
 		api.GET("/reason-codes", h.ListReasonCodes)
 		api.POST("/reason-codes", handlers.RequireRoles("ADMIN"), h.CreateReasonCode)
 		api.GET("/inventory", h.ListInventory)
+		api.GET("/inventory/export", h.ExportInventoryExcel)
 		api.GET("/inventory-lots", h.ListLotInventory)
 		api.GET("/movements", h.ListMovements)
+		api.GET("/movements/export", h.ExportMovementsExcel)
 		api.GET("/stock-counts", h.ListStockCounts)
 		api.GET("/adjustments", h.ListAdjustments)
 		api.POST("/receive", h.Receive)
@@ -71,6 +73,10 @@ func Register(r *gin.Engine, h handlers.Handler) {
 	r.StaticFile("/js/transactions.js", "./web/js/transactions.js")
 	r.StaticFile("/js/scanner.js", "./web/js/scanner.js")
 	r.NoRoute(func(c *gin.Context) {
+		if c.Request.URL.Path == "/api" || strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			c.JSON(http.StatusNotFound, gin.H{"error": "API endpoint not found"})
+			return
+		}
 		if c.Request.Method == http.MethodGet {
 			c.File("./web/index.html")
 			return
